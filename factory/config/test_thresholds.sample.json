@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "suite": "ft_suite_smoke",
+  "cases": {
+    "FT_BLE_SCAN_001": {
+      "min_device_count": 3,
+      "min_rssi_dbm": -75,
+      "timeout_ms": 5000
+    },
+    "FT_CONN_001": {
+      "max_conn_latency_ms": 2500,
+      "max_retry_count": 2,
+      "timeout_ms": 10000
+    },
+    "FT_GATT_LOOP_001": {
+      "max_rtt_ms": 150,
+      "min_success_ratio": 0.99,
+      "timeout_ms": 8000
+    }
+  }
+}
