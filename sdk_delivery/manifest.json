@@ -8,7 +8,8 @@
   "factory_assets": [
     "factory/config/capability_matrix.json",
     "factory/config/test_thresholds.sample.json",
-    "factory/samples/ft_result.sample.json"
+    "factory/samples/ft_result.sample.json",
+    "factory_app/"
   ],
   "checks": [
     "tools/test_suite/check_public_boundary.py",
