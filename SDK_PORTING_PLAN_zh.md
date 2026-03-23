@@ -45,7 +45,70 @@
 
 ---
 
-## 3. 创建可移植 SDK 的实施方案（分阶段）
+## 3. 面向“生产测试（PVT/产线）”的 SDK 设计与开发方案
+
+如果你的目标是“在生产测试中可批量使用”的 SDK，建议在通用 SDK 之外，增加一层 **Factory Test SDK（FT-SDK）**，并坚持“能力收敛、流程固定、结果可追溯”三原则。
+
+### 3.1 FT-SDK 分层建议（在现有框架上最小增量）
+
+在现有三层架构上增加一个面向产测的上层：
+
+- **FT API 层（新增）**
+  - 提供稳定且短小的测试接口（如：射频读写、扫描 KPI、连接 KPI、GATT 回环、功耗采样触发）。
+  - 返回统一测试结果对象（状态码、耗时、原始指标、判定结论）。
+- **Public SDK 层（现有 `framework/include` + `framework/api`）**
+  - 复用 `bluetooth_create_instance`、`bt_adapter_*`、`bt_gatt*` 等基础能力。
+- **Core Runtime 层（现有 `service/src` + `service/profiles`）**
+  - 复用实例管理、profile 生命周期、消息分发。
+- **Stack Adapter 层（现有 `service/stacks/*`）**
+  - 复用 SAL，适配不同协议栈/芯片。
+
+### 3.2 产测 SDK 最小能力集（建议先做）
+
+建议先做以下 10 个原子测试项，形成 `ft_suite_smoke`：
+
+1. 适配器上电/下电（含超时）
+2. 本机地址读取与校验
+3. BLE 扫描（数量阈值、RSSI 阈值）
+4. BLE 定向连接（成功率、建链时延）
+5. GATT 读写回环（数据一致性、往返时延）
+6. BR/EDR Inquiry（如果机型支持）
+7. 配对/解绑（成功率）
+8. 断链重连（N 次稳定性）
+9. 发射/接收测试模式入口（若芯片支持 VSC）
+10. 日志与结果落盘（本地 + 上传）
+
+### 3.3 统一结果模型（强烈建议）
+
+建议定义统一结构体（示意）：
+
+- `case_id`：测试项编号（固定枚举）
+- `status`：PASS/FAIL/BLOCKED
+- `bt_status`：底层错误码（原值）
+- `duration_ms`：耗时
+- `metrics`：关键指标（如 rssi_avg、conn_latency_ms、retry_cnt）
+- `verdict_reason`：失败原因（可读）
+- `trace_id`：关联日志链路（便于追溯）
+
+产线要的是“可判定”和“可追责”，不是只有 API 返回 0/1。
+
+### 3.4 产测流程编排（推荐状态机）
+
+建议实现固定编排器：
+
+1. 环境预检（电源、串口、天线、权限）
+2. 蓝牙初始化
+3. 用例顺序执行（支持 fail-fast / continue-on-fail）
+4. 结果聚合（单项 + 总结论）
+5. 资源回收（反注册、实例释放、日志归档）
+
+并提供两种执行模式：
+- **在线模式**：与 MES/产测上位机实时交互；
+- **离线模式**：本地执行后导出 JSON 报告。
+
+---
+
+## 4. 创建可移植 SDK 的实施方案（分阶段）
 
 ## 阶段 A：接口冻结与打包（2~4 周）
 1. 冻结 `framework/include` 为 v1 SDK 头文件集。
@@ -75,23 +138,36 @@
 3. 增加“错误码域 + 可恢复建议”。
 4. 完善 mock backend + CI 场景测试（无真实蓝牙硬件也可回归）。
 
+## 阶段 D：生产测试能力固化（2~4 周，可与阶段 C 并行）
+1. 增加 FT-SDK API（建议独立头文件：`bt_factory_test.h`）。
+2. 建立测试项注册机制（case registry），支持机型裁剪。
+3. 增加阈值配置（JSON/ini）与版本化管理（随固件版本绑定）。
+4. 落地结果上报协议（本地文件 + socket/http 上报适配）。
+5. 为关键 case 提供 golden-device 对照测试。
+
+**产出**：
+- `factory/include/bt_factory_test.h`
+- `factory/src/*`（编排器、测试项实现、结果聚合）
+- `factory/config/test_thresholds.json`
+- `tools/test_suite` 对接脚本
+
 ---
 
-## 4. 提高通用性的重点建议
+## 5. 提高通用性的重点建议
 
-### 4.1 能力协商优先于编译开关
+### 5.1 能力协商优先于编译开关
 - 保留 `CONFIG_*` 做裁剪，但对应用暴露运行时能力查询：
   - 是否支持 BR/EDR、LE、LE Audio、Codec、最大连接数等。
 - 避免应用按宏条件编译，改为运行时分支。
 
-### 4.2 统一异步与线程模型
+### 5.2 统一异步与线程模型
 - 当前样例已体现“回调线程 != 业务线程”的实践，建议沉淀为官方模式：
   1. callback 只入队；
   2. 业务线程消费；
   3. 所有同步 API 在非回调线程调用。
 - SDK 提供默认事件循环适配器（pthread/uv/RTOS loop）。
 
-### 4.3 Profile 能力模块化
+### 5.3 Profile 能力模块化
 - 将 A2DP/HFP/GATT/LEA 等做成可选子包（link-time / package-time）。
 - 每个 profile 提供：
   - 初始化入口
@@ -99,42 +175,56 @@
   - 最小示例
   - 错误恢复指南
 
-### 4.4 API 版本与兼容策略
+### 5.4 API 版本与兼容策略
 - 采用 `major.minor.patch`：
   - major 变更允许 ABI break；
   - minor 仅新增接口；
   - patch 修复不改签名。
 - 在头文件中引入 `BT_SDK_API_LEVEL`，支持老版本降级路径。
 
-### 4.5 跨平台依赖隔离
+### 5.5 跨平台依赖隔离
 - `libuv`、IPC、日志、存储等作为可替换适配层。
 - 对 host Linux、RTOS、Android 三类平台提供不同默认实现。
 
 ---
 
-## 5. 当前应用开发应怎么做（可立即落地）
+## 6. 当前应用开发应怎么做（可立即落地）
 
-## 5.1 推荐开发流程
+## 6.1 推荐开发流程
 1. **创建实例**：`bluetooth_create_instance()`。
 2. **注册回调**：先注册 `adapter_callbacks_t`，再执行 enable/scan/connect。
 3. **线程解耦**：回调线程只投递消息，业务线程处理状态机。
 4. **按 profile 启停服务**：通过 `bluetooth_start_service/stop_service` 控制资源。
 5. **退出清理**：取消回调、删除实例、清空消息队列。
 
-## 5.2 推荐工程结构（应用侧）
+## 6.2 推荐工程结构（应用侧）
 - `bt_app_core.c`：实例管理、状态机、错误恢复。
 - `bt_app_events.c`：回调到事件总线。
 - `bt_app_profiles_*.c`：按 profile 分文件。
 - `bt_app_hal.c`：平台差异（日志、线程、定时器）。
 
-### 5.3 关键实践
+### 6.3 关键实践
 - 对所有 `bt_status_t` 做统一检查和重试策略。
 - 扫描、连接、配对流程设置超时与取消路径。
 - 先以 `sample_code/basic`/`tests/adapter_test.c` 作为最小模板，逐步引入 profile。
 
+## 6.4 生产测试应用落地模板（建议）
+
+建议你的产测程序按如下目录组织：
+
+- `factory_app/main.c`：参数解析、测试套执行入口
+- `factory_app/runner.c`：用例编排与超时控制
+- `factory_app/cases/case_*.c`：原子测试项
+- `factory_app/report.c`：结果聚合、JSON 输出、上报
+- `factory_app/platform/*.c`：串口/文件/时间戳/网络适配
+
+建议 CLI 示例：
+
+- `ft_runner --suite smoke --dut-id xxx --station S01 --output /tmp/ft.json`
+
 ---
 
-## 6. 端口实践建议（给芯片/系统平台团队）
+## 7. 端口实践建议（给芯片/系统平台团队）
 
 1. **先通 Adapter + Scan + Connect**，再逐个 profile 上线。
 2. 建立 HCI 事件回放测试（利用 `debug/btsnoop_*`），用于端口回归。
@@ -147,15 +237,15 @@
 
 ---
 
-## 7. 里程碑建议（务实版本）
+## 8. 里程碑建议（务实版本）
 
-- **M1（1个月）**：发布 v1 Lite SDK（Adapter+Scan+GATTc），含文档与示例。
-- **M2（2个月）**：完成第二后端（非 Zephyr）并通过兼容性测试。
-- **M3（3个月）**：发布完整 profile SDK 与应用开发手册、错误码手册、迁移指南。
+- **M1（1个月）**：发布 v1 Lite SDK（Adapter+Scan+GATTc）+ `ft_suite_smoke`。
+- **M2（2个月）**：完成第二后端（非 Zephyr）并通过兼容性测试 + 产测阈值固化。
+- **M3（3个月）**：发布完整 profile SDK + FT-SDK + 产线接入手册。
 
 ---
 
-## 8. 结论
+## 9. 结论
 
 这个仓库已经具备“可移植 SDK”核心雏形（API 层 + Core 层 + SAL 层），下一步重点不是“重写”，而是：
 1. **冻结公共边界**，
